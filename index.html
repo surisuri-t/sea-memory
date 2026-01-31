@@ -6,17 +6,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Ocean Memory Sequence</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Fredoka+One&family=Quicksand:wght@400;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka+One&family=Quicksand:wght@400;600&family=Gaegu:wght@400;700&display=swap" rel="stylesheet">
     <style>
         body {
             margin: 0;
             padding: 0;
             overflow: hidden;
-            background: linear-gradient(to bottom, #0ea5e9, #0369a1, #0c4a6e);
-            font-family: 'Quicksand', sans-serif;
+            background: linear-gradient(to bottom, #051529, #020b18, #01040a);
+            font-family: 'Gaegu', 'Quicksand', sans-serif;
         }
         .font-title {
             font-family: 'Fredoka One', cursive;
+        }
+        .font-cute {
+            font-family: 'Gaegu', cursive;
         }
         @keyframes bubble {
             0% { transform: translateY(100vh) scale(1); opacity: 0; }
@@ -25,7 +28,7 @@
         }
         .bubble {
             position: absolute;
-            background: rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.15);
             border-radius: 50%;
             pointer-events: none;
             animation: bubble linear infinite;
