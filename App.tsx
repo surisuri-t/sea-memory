@@ -1,579 +1,396 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { GoogleGenAI } from "@google/genai";
-import { CONSTELLATIONS } from './constants';
-import { GameState, Constellation, RankEntry, StarPoint } from './types';
-import StarBackground from './components/StarBackground';
-import ShootingStar from './components/ShootingStar';
+import { GameStatus, OceanCreature, LevelConfig, SpecialItem } from './types';
+import { OCEAN_CREATURES, LEVELS } from './constants';
+import OceanBackground from './components/OceanBackground';
+import OceanCreatureIcon from './components/OceanCreatureIcon';
+import { oceanAudio } from './utils/audio';
+
+const STORAGE_KEY = 'OCEAN_MEMORY_API_KEY';
 
 const App: React.FC = () => {
-  const [gameState, setGameState] = useState<GameState>(GameState.LOBBY);
-  const [currentLevel, setCurrentLevel] = useState(0);
-  const [userStars, setUserStars] = useState<number[]>([]);
-  const [wrongClicks, setWrongClicks] = useState(0);
+  const [status, setStatus] = useState<GameStatus>('IDLE');
+  const [currentLevel, setCurrentLevel] = useState<LevelConfig>(LEVELS[0]);
+  const [sequence, setSequence] = useState<OceanCreature[]>([]);
+  const [userSequence, setUserSequence] = useState<OceanCreature[]>([]);
+  const [activeCreature, setActiveCreature] = useState<OceanCreature | null>(null);
+  const [showIndex, setShowIndex] = useState<number>(-1);
+  const [score, setScore] = useState(0);
+  const [seaFact, setSeaFact] = useState<string>("");
   
-  // 힌트 관련 상태
-  const [hintsUsed, setHintsUsed] = useState(0); // 사용한 힌트 개수 (최대 3)
-  const [activeHintId, setActiveHintId] = useState<number | null>(null); // 현재 깜빡이고 있는 힌트 별 ID
-  const [hintCooldown, setHintCooldown] = useState(0); // 남은 쿨다운 시간(초)
+  // API & Settings States
+  const [manualKey, setManualKey] = useState<string>(localStorage.getItem(STORAGE_KEY) || "");
+  const [tempKey, setTempKey] = useState<string>(localStorage.getItem(STORAGE_KEY) || "");
+  const [isApiReady, setIsApiReady] = useState<boolean>(false);
+  const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [testStatus, setTestStatus] = useState<'IDLE' | 'TESTING' | 'SUCCESS' | 'ERROR'>('IDLE');
+  const [showKey, setShowKey] = useState<boolean>(false);
+  
+  // Special Item States
+  const [activeItem, setActiveItem] = useState<SpecialItem | null>(null);
+  const [bonusMultiplier, setBonusMultiplier] = useState(1);
+  const [slowMotion, setSlowMotion] = useState(false);
 
-  const [showShootingStar, setShowShootingStar] = useState(false);
-  const [geminiFeedback, setGeminiFeedback] = useState<string>("");
-  const [loadingFeedback, setLoadingFeedback] = useState(false);
-  const [totalScore, setTotalScore] = useState(0);
-  const [startTime, setStartTime] = useState(0);
-  const [rankings, setRankings] = useState<RankEntry[]>([]);
+  const getActiveKey = useCallback(() => {
+    return manualKey || process.env.API_KEY || "";
+  }, [manualKey]);
 
-  const constellation = CONSTELLATIONS[currentLevel % CONSTELLATIONS.length];
-
-  const getDistance = (p1: { x: number; y: number }, p2: { x: number; y: number }) => {
-    return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
-  };
-
-  const decoys = useMemo(() => {
-    const points: StarPoint[] = [];
-    const minDistance = 9; 
-    const maxDecoys = 14;
-    const existingStars = constellation.stars;
-
-    for (let i = 0; i < maxDecoys; i++) {
-      let attempts = 0;
-      let valid = false;
-      let newPoint: StarPoint = { id: 1000 + i, x: 0, y: 0, isDecoy: true };
-
-      while (!valid && attempts < 50) {
-        newPoint.x = 10 + Math.random() * 80;
-        newPoint.y = 10 + Math.random() * 80;
-        
-        const tooCloseToConstellation = existingStars.some(s => getDistance(newPoint, s) < minDistance);
-        const tooCloseToDecoys = points.some(p => getDistance(newPoint, p) < minDistance);
-
-        if (!tooCloseToConstellation && !tooCloseToDecoys) {
-          valid = true;
-        }
-        attempts++;
-      }
-
-      if (valid) {
-        points.push(newPoint);
-      }
+  const checkApiKeyStatus = useCallback(async () => {
+    const key = getActiveKey();
+    if (key && key.length > 10) {
+      setIsApiReady(true);
+      return true;
     }
-    return points;
-  }, [currentLevel, constellation]);
+    
+    try {
+      // @ts-ignore
+      if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
+        // @ts-ignore
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        if (hasKey) {
+          setIsApiReady(true);
+          return true;
+        }
+      }
+    } catch (e) {
+      console.warn("AI Studio 플랫폼 확인 건너뜀");
+    }
+
+    setIsApiReady(false);
+    return false;
+  }, [getActiveKey]);
 
   useEffect(() => {
-    const saved = localStorage.getItem('star_rankings');
-    if (saved) setRankings(JSON.parse(saved));
-  }, []);
+    checkApiKeyStatus();
+  }, [checkApiKeyStatus]);
 
-  const saveScore = (finalScore: number) => {
-    const newEntry: RankEntry = {
-      name: `우주 여행자`,
-      score: finalScore,
-      level: currentLevel + 1,
-      date: new Date().toLocaleDateString()
-    };
-    const updated = [...rankings, newEntry]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 5);
-    setRankings(updated);
-    localStorage.setItem('star_rankings', JSON.stringify(updated));
+  const handleSaveKey = () => {
+    const trimmed = tempKey.trim();
+    setManualKey(trimmed);
+    localStorage.setItem(STORAGE_KEY, trimmed);
+    setIsApiReady(trimmed.length > 10);
+    setTestStatus('IDLE');
+    alert("API 키가 저장되었습니다.");
   };
 
-  const fetchCelestialWisdom = async (success: boolean, scoreGained: number) => {
-    setLoadingFeedback(true);
+  const handleDeleteKey = () => {
+    if (window.confirm("저장된 API 키를 삭제하시겠습니까?")) {
+      setManualKey("");
+      setTempKey("");
+      localStorage.removeItem(STORAGE_KEY);
+      setIsApiReady(false);
+      setTestStatus('IDLE');
+    }
+  };
+
+  const runConnectionTest = async () => {
+    const keyToTest = tempKey.trim() || process.env.API_KEY;
+    if (!keyToTest) {
+      setTestStatus('ERROR');
+      return;
+    }
+
+    setTestStatus('TESTING');
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = success 
-        ? `${constellation.koreanName} 별자리를 완벽하게 기억해낸 사용자에게 따뜻한 축하를 전해주세요. 획득 점수는 ${scoreGained}점입니다. 밤하늘의 은하수가 친구가 되어주고 있다는 느낌으로 한국어로 2문장 내외로 다정하게 말해주세요.`
-        : `${constellation.koreanName} 그리기에 실패한 사용자에게 다정한 격려를 보내주세요. 다음에 떨어지는 별똥별이 소원을 들어줄 거라는 희망적인 메시지를 담아 한국어로 2문장 내외로 작성해주세요.`;
-      
+      const ai = new GoogleGenAI({ apiKey: keyToTest });
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: prompt
+        contents: "Hello! 짧은 인사를 한국어로 해줘.",
       });
-      setGeminiFeedback(response.text || "");
-    } catch (error) {
-      setGeminiFeedback(success ? "우와! 별들이 당신의 기억력을 칭찬하며 춤추고 있어요!" : "아쉽지만 괜찮아요. 밤하늘은 언제나 당신을 기다리고 있답니다.");
-    } finally {
-      setLoadingFeedback(false);
-    }
-  };
-
-  const startGame = () => {
-    setGameState(GameState.OBSERVE);
-    setUserStars([]);
-    setWrongClicks(0);
-    setHintsUsed(0);
-    setActiveHintId(null);
-    setHintCooldown(0);
-    setGeminiFeedback("");
-  };
-
-  const retryLevel = () => {
-    setGameState(GameState.OBSERVE);
-    setUserStars([]);
-    setWrongClicks(0);
-    setHintsUsed(0);
-    setActiveHintId(null);
-    setHintCooldown(0);
-    setGeminiFeedback("");
-  };
-
-  const nextLevel = () => {
-    setCurrentLevel(prev => prev + 1);
-    setGameState(GameState.OBSERVE);
-    setUserStars([]);
-    setWrongClicks(0);
-    setHintsUsed(0);
-    setActiveHintId(null);
-    setHintCooldown(0);
-    setGeminiFeedback("");
-  };
-
-  const prevLevel = () => {
-    if (currentLevel > 0) {
-      setCurrentLevel(prev => prev - 1);
-      setGameState(GameState.OBSERVE);
-      setUserStars([]);
-      setWrongClicks(0);
-      setHintsUsed(0);
-      setActiveHintId(null);
-      setHintCooldown(0);
-      setGeminiFeedback("");
-    }
-  };
-
-  const goToDraw = () => {
-    setGameState(GameState.DRAW);
-    setStartTime(Date.now());
-  };
-
-  const toggleStar = (id: number) => {
-    if (gameState !== GameState.DRAW) return;
-    
-    // 만약 현재 힌트로 활성화된 별을 클릭했다면 힌트 비활성화
-    if (id === activeHintId) {
-      setActiveHintId(null);
-    }
-
-    const isCorrect = constellation.stars.some(s => s.id === id);
-    if (!isCorrect && !userStars.includes(id)) {
-      setWrongClicks(prev => prev + 1);
-    }
-
-    setUserStars(prev => 
-      prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
-    );
-  };
-
-  const useHint = () => {
-    if (hintsUsed >= 3 || hintCooldown > 0 || gameState !== GameState.DRAW) return;
-    
-    // 아직 선택하지 않은 정답 별 중 하나를 찾아 힌트로 지정
-    const firstUnselected = constellation.stars.find(s => !userStars.includes(s.id));
-    
-    if (firstUnselected) {
-      setActiveHintId(firstUnselected.id);
-      setHintsUsed(prev => prev + 1);
-      setHintCooldown(30);
-    }
-  };
-
-  // 힌트 쿨다운 타이머
-  useEffect(() => {
-    let timer: any;
-    if (hintCooldown > 0) {
-      timer = setInterval(() => {
-        setHintCooldown(prev => Math.max(0, prev - 1));
-      }, 1000);
-    }
-    return () => clearInterval(timer);
-  }, [hintCooldown]);
-
-  const checkResult = () => {
-    const requiredStarIds = constellation.stars.map(s => s.id);
-    const sortedUser = [...userStars].sort();
-    const sortedRequired = [...requiredStarIds].sort();
-    
-    const isSuccess = JSON.stringify(sortedUser) === JSON.stringify(sortedRequired);
-
-    if (isSuccess) {
-      const duration = (Date.now() - startTime) / 1000;
-      const difficultyBonus = constellation.difficulty === 'Hard' ? 2500 : constellation.difficulty === 'Medium' ? 1800 : 1200;
-      const timeBonus = Math.max(0, Math.floor(1000 - duration * 15));
-      const roundScore = difficultyBonus + timeBonus;
-      
-      setTotalScore(prev => prev + roundScore);
-      setGameState(GameState.SUCCESS);
-      fetchCelestialWisdom(true, roundScore);
-      
-      if (currentLevel === CONSTELLATIONS.length - 1) {
-        saveScore(totalScore + roundScore);
+      if (response.text) {
+        setTestStatus('SUCCESS');
       }
-    } else {
-      setGameState(GameState.FAILURE);
-      setShowShootingStar(true);
-      setTimeout(() => setShowShootingStar(false), 2000);
-      fetchCelestialWisdom(false, 0);
+    } catch (err: any) {
+      console.error("연결 테스트 실패:", err);
+      setTestStatus('ERROR');
     }
   };
 
-  const goHome = () => {
-    if (window.confirm("정말로 로비로 돌아갈까요? 모든 게임 진행 상황과 점수가 초기화됩니다.")) {
-      setGameState(GameState.LOBBY);
-      setCurrentLevel(0);
-      setTotalScore(0);
-      setUserStars([]);
-      setWrongClicks(0);
-      setHintsUsed(0);
-      setActiveHintId(null);
-      setHintCooldown(0);
-      setGeminiFeedback("");
+  const fetchSeaFact = useCallback(async () => {
+    try {
+      const key = getActiveKey();
+      if (!key) return;
+      const ai = new GoogleGenAI({ apiKey: key });
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: "바다 생물에 대한 아주 짧고 흥미로운 사실 하나를 한국어로 알려줘.",
+        config: {
+          systemInstruction: "당신은 재미있는 해양 생물학자입니다. 15단어 이내로 아주 짧게 설명하세요."
+        }
+      });
+      if (response.text) {
+        setSeaFact(response.text.trim());
+      }
+    } catch (err: any) {
+      console.error("Gemini API error:", err);
     }
+  }, [getActiveKey]);
+
+  useEffect(() => {
+    if (status === 'SUCCESS' && isApiReady) {
+      oceanAudio.playSuccess();
+      fetchSeaFact();
+    } else if (status === 'FAIL') {
+      oceanAudio.playFail();
+    } else if (status === 'IDLE' || status === 'SHOWING') {
+      setSeaFact("");
+    }
+  }, [status, fetchSeaFact, isApiReady]);
+
+  const startGame = (level: LevelConfig) => {
+    setCurrentLevel(level);
+    const newSeq = generateSequence(level);
+    setActiveItem(null);
+    setBonusMultiplier(1);
+    setSlowMotion(false);
+    setSequence(newSeq);
+    setUserSequence([]);
+    setStatus('SHOWING');
+    setShowIndex(0);
   };
 
   useEffect(() => {
-    if (gameState === GameState.OBSERVE) {
-      const timer = setTimeout(() => goToDraw(), 5000);
+    if (status === 'SHOWING' && showIndex < sequence.length) {
+      setActiveCreature(sequence[showIndex]);
+      const duration = slowMotion ? currentLevel.displayDuration * 1.5 : currentLevel.displayDuration;
+      const timer = setTimeout(() => {
+        setActiveCreature(null);
+        setTimeout(() => {
+          setShowIndex(prev => prev + 1);
+        }, 300);
+      }, duration);
       return () => clearTimeout(timer);
+    } else if (status === 'SHOWING' && showIndex >= sequence.length) {
+      setStatus('INPUTTING');
+      setActiveCreature(null);
     }
-  }, [gameState]);
+  }, [status, showIndex, sequence, currentLevel.displayDuration, slowMotion]);
 
-  const gridLines = useMemo(() => {
-    const lines = [];
-    for (let i = 1; i < 10; i++) {
-      lines.push(i * 10);
+  const generateSequence = useCallback((level: LevelConfig) => {
+    const newSeq: OceanCreature[] = [];
+    for (let i = 0; i < level.fishCount; i++) {
+      const randomIndex = Math.floor(Math.random() * OCEAN_CREATURES.length);
+      newSeq.push(OCEAN_CREATURES[randomIndex]);
     }
-    return lines;
+    return newSeq;
   }, []);
 
+  const handleInput = (creature: OceanCreature) => {
+    if (status !== 'INPUTTING') return;
+    oceanAudio.playBloop();
+    const nextUserSeq = [...userSequence, creature];
+    setUserSequence(nextUserSeq);
+    const currentIdx = nextUserSeq.length - 1;
+    if (creature.id !== sequence[currentIdx].id) {
+      setStatus('FAIL');
+      return;
+    }
+    if (nextUserSeq.length === sequence.length) {
+      setStatus('SUCCESS');
+      setScore(prev => prev + (currentLevel.id * 10 * bonusMultiplier));
+    }
+  };
+
+  const resetGame = () => {
+    setStatus('IDLE');
+    setSequence([]);
+    setUserSequence([]);
+    setScore(0);
+    setActiveItem(null);
+  };
+
   return (
-    <div className="relative min-h-screen w-full flex flex-col items-center justify-center p-4">
-      <StarBackground isSuccess={gameState === GameState.SUCCESS} />
-      {showShootingStar && <ShootingStar />}
+    <div className="relative min-h-screen flex flex-col items-center justify-center p-4 text-white select-none overflow-hidden font-cute">
+      <OceanBackground />
 
-      <div className="z-10 w-full max-w-2xl bg-white/10 backdrop-blur-2xl border border-white/20 rounded-[3rem] p-8 shadow-[0_20px_60px_rgba(0,0,0,0.6)] overflow-hidden">
-        
-        {gameState === GameState.LOBBY && (
-          <div className="text-center py-6 animate-fade-in">
-            <div className="mb-8 flex justify-center">
-              <div className="relative w-32 h-32 animate-pulse-slow">
-                <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-[0_0_15px_rgba(255,255,255,0.8)]">
-                  <circle cx="20" cy="30" r="3" fill="white" />
-                  <circle cx="40" cy="50" r="3" fill="white" />
-                  <circle cx="60" cy="40" r="3" fill="white" />
-                  <circle cx="80" cy="60" r="3" fill="white" />
-                  <circle cx="50" cy="80" r="3" fill="white" />
-                  <path d="M20 30 L40 50 L60 40 L80 60 L50 80" stroke="white" strokeWidth="1" strokeDasharray="4 4" fill="none" opacity="0.6" />
-                </svg>
-              </div>
-            </div>
-
-            <h1 className="text-6xl font-gamja mb-4 text-transparent bg-clip-text bg-gradient-to-b from-white to-blue-200 drop-shadow-md">
-              별빛 기억 여행
-            </h1>
-            <p className="text-lg text-blue-100/70 mb-10 font-quicksand tracking-wider">따뜻한 밤하늘의 별자리를 따라가요</p>
-            
-            <div className="flex flex-col gap-4 items-center">
-              <button 
-                onClick={startGame} 
-                className="w-72 py-5 bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-400 hover:to-indigo-400 text-white rounded-full font-gamja text-3xl transition-all transform hover:scale-105 shadow-[0_10px_40px_rgba(59,130,246,0.4)] active:scale-95"
-              >
-                여행 시작하기
-              </button>
-              <div className="flex gap-4">
-                <button onClick={() => setGameState(GameState.RANKING)} className="px-10 py-4 bg-white/5 hover:bg-white/10 rounded-full text-base border border-white/10 transition-all font-quicksand">🏆 명예의 전당</button>
-                <button onClick={() => setGameState(GameState.ENCYCLOPEDIA)} className="px-10 py-4 bg-white/5 hover:bg-white/10 rounded-full text-base border border-white/10 transition-all font-quicksand">📚 별자리 도감</button>
-              </div>
-            </div>
+      {/* HUD */}
+      <div className="absolute top-8 left-8 z-20">
+        <h1 className="text-3xl md:text-5xl font-title drop-shadow-[0_2px_10px_rgba(0,0,0,0.8)] tracking-widest text-blue-50">
+          바다탐험
+        </h1>
+        <p className="text-blue-200/80 text-lg md:text-2xl mt-1 font-bold drop-shadow-md">
+          주어진 시간안에 바다 생물의 순서와 색을 기억해서 선택하는 게임입니다.
+        </p>
+        <div className="flex items-center gap-4 mt-3">
+          <div className="flex items-center gap-2 bg-blue-950/80 px-4 py-1.5 rounded-full border border-blue-400/30 shadow-lg backdrop-blur-md">
+            <span className="text-base font-black text-blue-300 uppercase tracking-tighter">점수</span>
+            <span className="text-2xl font-bold text-white">{score}</span>
           </div>
-        )}
-
-        {gameState === GameState.RANKING && (
-          <div className="animate-fade-in">
-            <div className="flex justify-between items-center mb-10">
-              <h2 className="text-4xl font-gamja text-blue-200">명예의 여행자</h2>
-              <button onClick={() => setGameState(GameState.LOBBY)} className="px-6 py-3 bg-white/5 rounded-2xl hover:bg-white/10 text-white/70 transition-all text-base font-gamja">돌아가기</button>
-            </div>
-            <div className="space-y-5">
-              {rankings.length > 0 ? rankings.map((r, i) => (
-                <div key={i} className="flex justify-between items-center p-6 bg-white/5 rounded-[2rem] border border-white/10">
-                  <div className="flex items-center gap-6">
-                    <span className={`text-4xl font-gamja ${i === 0 ? 'text-yellow-300' : 'text-white/30'}`}>{i + 1}등</span>
-                    <span className="font-medium text-2xl">{r.name}</span>
-                  </div>
-                  <div className="flex items-center gap-6">
-                    <span className="text-sm text-blue-300 bg-blue-500/10 px-4 py-1 rounded-full font-quicksand">LV.{r.level}</span>
-                    <span className="text-3xl font-gamja text-yellow-300">{r.score.toLocaleString()}</span>
-                  </div>
-                </div>
-              )) : <p className="text-center text-white/30 py-24 text-xl font-light">아직 밤하늘에 새겨진 기록이 없어요.</p>}
-            </div>
-          </div>
-        )}
-
-        {gameState === GameState.ENCYCLOPEDIA && (
-          <div className="max-h-[75vh] overflow-y-auto pr-2 custom-scrollbar animate-fade-in">
-            <div className="flex justify-between items-center mb-8 sticky top-0 bg-[#0a1022]/90 backdrop-blur-xl p-5 -mx-4 rounded-t-3xl z-20">
-              <h2 className="text-4xl font-gamja text-blue-200">별자리 백과사전</h2>
-              <button onClick={() => setGameState(GameState.LOBBY)} className="px-6 py-3 bg-white/5 rounded-2xl hover:bg-white/10 text-white/70 transition-all text-base font-gamja">닫기</button>
-            </div>
-            <div className="space-y-8 pb-6">
-              {CONSTELLATIONS.map(c => (
-                <div key={c.id} className="p-10 bg-white/5 rounded-[3rem] border border-white/10 hover:border-blue-400/30 transition-all">
-                  <div className="flex justify-between items-baseline mb-6">
-                    <h3 className="text-4xl font-gamja text-blue-300">{c.koreanName}</h3>
-                    <span className="text-sm font-quicksand text-white/30 uppercase tracking-widest">{c.difficulty}</span>
-                  </div>
-                  <p className="text-white/80 mb-8 leading-relaxed text-lg font-light">{c.description}</p>
-                  <div className="space-y-4">
-                    <div className="bg-blue-500/10 p-6 rounded-3xl border border-blue-500/20">
-                      <h4 className="text-blue-200 text-sm font-bold mb-3">✨ 전해오는 이야기</h4>
-                      <p className="text-base text-white/90 font-light leading-relaxed">{c.myth}</p>
-                    </div>
-                    <div className="bg-amber-500/10 p-6 rounded-3xl border border-amber-500/20">
-                      <h4 className="text-amber-200 text-sm font-bold mb-3">💡 반짝 상식</h4>
-                      <p className="text-base text-white/90 font-light leading-relaxed">{c.funFact}</p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {(gameState === GameState.OBSERVE || gameState === GameState.DRAW || gameState === GameState.SUCCESS || gameState === GameState.FAILURE) && (
-          <div className="flex flex-col items-center animate-fade-in">
-            <div className="mb-6 flex justify-between w-full items-end border-b border-white/10 pb-4">
-              <div className="flex items-center gap-3">
-                <button 
-                  onClick={goHome}
-                  className="p-2 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 transition-all group"
-                  title="로비로 돌아가기 (완전 초기화)"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/50 group-hover:text-blue-300 transition-colors">
-                    <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-                    <polyline points="9 22 9 12 15 12 15 22"></polyline>
-                  </svg>
-                </button>
-                <button 
-                  onClick={prevLevel}
-                  disabled={currentLevel === 0}
-                  className={`p-2 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 transition-all group ${currentLevel === 0 ? 'opacity-20 cursor-not-allowed' : ''}`}
-                  title="이전 여행"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/50 group-hover:text-blue-300 transition-colors">
-                    <path d="m15 18-6-6 6-6"></path>
-                  </svg>
-                </button>
-                <div>
-                  <span className="text-xs font-quicksand text-blue-400 tracking-[0.2em] mb-1 block">STAGE {currentLevel + 1} / {CONSTELLATIONS.length}</span>
-                  <h2 className="text-3xl font-gamja">{constellation.koreanName}</h2>
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-xl font-gamja text-yellow-300 drop-shadow-sm">{totalScore.toLocaleString()}</div>
-                <div className="text-[0.6rem] text-white/30 uppercase tracking-widest font-quicksand">Total Points</div>
-              </div>
-            </div>
-
-            {(gameState === GameState.DRAW) && (
-              <div className="w-full flex justify-between items-center mb-4 px-2">
-                <div className={`px-6 py-2 rounded-full border transition-all duration-300 font-gamja text-lg flex items-center gap-3 ${
-                  userStars.length === constellation.stars.length 
-                    ? 'bg-blue-500/20 border-blue-400 text-blue-200 shadow-[0_0_15px_rgba(96,165,250,0.3)]' 
-                    : 'bg-white/5 border-white/10 text-white/60'
-                }`}>
-                  <span className="text-sm font-quicksand tracking-widest text-white/40 uppercase">Selected</span>
-                  <span className={`text-2xl ${userStars.length > constellation.stars.length ? 'text-red-400' : ''}`}>
-                    {userStars.length}
-                  </span>
-                  <span className="text-white/20">/</span>
-                  <span className="text-xl">{constellation.stars.length}</span>
-                </div>
-
-                <button 
-                  onClick={useHint}
-                  disabled={hintsUsed >= 3 || hintCooldown > 0}
-                  className={`flex items-center gap-2 px-5 py-2.5 rounded-full border font-gamja text-lg transition-all active:scale-95 ${
-                    hintsUsed >= 3 
-                      ? 'bg-white/5 border-white/5 text-white/20 cursor-not-allowed' 
-                      : hintCooldown > 0
-                        ? 'bg-cyan-500/5 border-cyan-500/10 text-cyan-500/40 cursor-wait'
-                        : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/20 shadow-[0_0_15px_rgba(34,211,238,0.1)]'
-                  }`}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"></path>
-                    <path d="M9 18h6"></path>
-                    <path d="M10 22h4"></path>
-                  </svg>
-                  {hintsUsed >= 3 ? '힌트 소진' : hintCooldown > 0 ? `대기 (${hintCooldown}s)` : `힌트 (${3 - hintsUsed}/3)`}
-                </button>
-              </div>
-            )}
-
-            <div className="relative w-full aspect-square bg-[#000000]/50 rounded-[2.5rem] border border-white/10 overflow-hidden shadow-inner group/canvas">
-              <svg viewBox="0 0 100 100" className="w-full h-full p-8">
-                <g className="grid-layer pointer-events-none transition-opacity duration-500 opacity-20 group-hover/canvas:opacity-40">
-                  {gridLines.map(pos => (
-                    <React.Fragment key={pos}>
-                      <line 
-                        x1={pos} y1="0" x2={pos} y2="100" 
-                        stroke="white" strokeWidth={pos === 50 ? "0.3" : "0.1"} 
-                        strokeDasharray={pos === 50 ? "" : "2 2"} 
-                      />
-                      <line 
-                        x1="0" y1={pos} x2="100" y2={pos} 
-                        stroke="white" strokeWidth={pos === 50 ? "0.3" : "0.1"} 
-                        strokeDasharray={pos === 50 ? "" : "2 2"} 
-                      />
-                    </React.Fragment>
-                  ))}
-                </g>
-
-                {(gameState === GameState.OBSERVE || gameState === GameState.SUCCESS || gameState === GameState.FAILURE) && constellation.connections.map(([id1, id2], idx) => {
-                  const s1 = constellation.stars.find(s => s.id === id1)!;
-                  const s2 = constellation.stars.find(s => s.id === id2)!;
-                  return (
-                    <line 
-                      key={idx} 
-                      x1={s1.x} y1={s1.y} x2={s2.x} y2={s2.y} 
-                      stroke="white" 
-                      strokeWidth="0.8" 
-                      strokeOpacity={gameState === GameState.OBSERVE ? "0.15" : "0.7"} 
-                      className="transition-all duration-1000"
-                    />
-                  );
-                })}
-
-                {(gameState === GameState.DRAW ? [...constellation.stars, ...decoys] : constellation.stars).map((star) => {
-                  const isSelected = userStars.includes(star.id);
-                  // 현재 활성화된 딱 하나의 힌트 별만 깜빡임
-                  const isHinting = activeHintId === star.id;
-                  
-                  return (
-                    <g key={star.id} onClick={() => toggleStar(star.id)} className="cursor-pointer group">
-                      <circle cx={star.x} cy={star.y} r="5" className="fill-white/0 group-hover:fill-white/5" />
-                      <circle 
-                        cx={star.x} cy={star.y} r={gameState === GameState.OBSERVE ? "2.5" : "2.2"} 
-                        className={`transition-all duration-500 ${
-                          gameState === GameState.OBSERVE 
-                            ? "fill-white animate-pulse" 
-                            : isSelected 
-                              ? "fill-yellow-200 drop-shadow-[0_0_12px_rgba(253,224,71,0.9)] scale-125 transform" 
-                              : isHinting 
-                                ? "fill-cyan-400 animate-hint-pulse drop-shadow-[0_0_15px_rgba(34,211,238,0.8)]"
-                                : "fill-white/30 group-hover:fill-white/60"
-                        }`}
-                        style={{ transformOrigin: `${star.x}px ${star.y}px` }}
-                      />
-                      <circle cx={star.x} cy={star.y} r="3.5" fill="transparent" />
-                    </g>
-                  );
-                })}
-              </svg>
-              
-              {gameState === GameState.OBSERVE && (
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                   <div className="px-6 py-2 rounded-full border border-white/20 bg-black/40 backdrop-blur-md text-sm font-gamja text-white/80 animate-pulse">
-                     별의 기억을 따라가는 중...
-                   </div>
-                </div>
-              )}
-
-              {gameState === GameState.DRAW && activeHintId !== null && (
-                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 pointer-events-none">
-                   <div className="px-4 py-1.5 rounded-full bg-cyan-500/20 border border-cyan-400/40 text-[10px] font-quicksand text-cyan-300 uppercase tracking-widest animate-fade-in flex items-center gap-2">
-                     <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
-                     Single Star Guide Active
-                   </div>
-                </div>
-              )}
-            </div>
-
-            {gameState === GameState.DRAW && (
-              <div className="mt-8 flex gap-4 w-full">
-                <button 
-                  onClick={checkResult} 
-                  className={`flex-1 py-5 rounded-[1.5rem] font-gamja text-2xl shadow-xl transition-all active:scale-95 ${
-                    userStars.length === constellation.stars.length
-                    ? 'bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-400 hover:to-indigo-400 text-white'
-                    : 'bg-white/10 text-white/40 border border-white/10'
-                  }`}
-                >
-                  별자리를 그려봐요
-                </button>
-                <button 
-                  onClick={() => {
-                    setUserStars([]);
-                    setWrongClicks(0);
-                    setHintsUsed(0);
-                    setActiveHintId(null);
-                    setHintCooldown(0);
-                  }} 
-                  className="px-8 py-5 bg-white/5 hover:bg-white/10 rounded-[1.5rem] font-gamja text-xl border border-white/10 transition-all text-white/50"
-                >
-                  다시하기
-                </button>
-              </div>
-            )}
-
-            {(gameState === GameState.SUCCESS || gameState === GameState.FAILURE) && (
-              <div className="mt-8 w-full animate-fade-in max-h-[40vh] overflow-y-auto custom-scrollbar">
-                <div className={`p-6 rounded-[2rem] mb-6 border backdrop-blur-md ${gameState === GameState.SUCCESS ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30'}`}>
-                   <h4 className={`text-2xl font-gamja mb-3 ${gameState === GameState.SUCCESS ? 'text-green-300' : 'text-red-300'}`}>
-                     {gameState === GameState.SUCCESS ? '✨ 성공을 축하해요!' : '☄️ 별자리가 흩어졌네요'}
-                   </h4>
-                   
-                   <div className="space-y-4 text-white/80 text-sm leading-relaxed mb-4 border-b border-white/10 pb-4">
-                     <p className="font-semibold text-blue-200">"{constellation.description}"</p>
-                     <p className="opacity-70 italic">{constellation.myth}</p>
-                   </div>
-
-                   <p className="text-white/90 text-sm font-gamja leading-relaxed text-base">
-                     {loadingFeedback ? "별의 요정이 다정한 말을 준비 중..." : geminiFeedback}
-                   </p>
-                </div>
-                
-                <div className="flex gap-4">
-                  <button 
-                    onClick={retryLevel} 
-                    className="flex-1 py-4 bg-white/5 hover:bg-white/10 rounded-2xl border border-white/10 font-gamja text-xl transition-all"
-                  >
-                    다시 하기
-                  </button>
-                  <button 
-                    onClick={nextLevel} 
-                    className={`flex-1 py-4 rounded-2xl shadow-lg font-gamja text-xl transition-all transform hover:scale-105 ${
-                      gameState === GameState.SUCCESS 
-                      ? 'bg-gradient-to-r from-blue-400 to-indigo-400' 
-                      : 'bg-white/10 text-white/60 border border-white/10'
-                    }`}
-                  >
-                    다음 여행
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+        </div>
       </div>
 
+      {/* Settings Button */}
+      <button 
+        onClick={() => setShowSettings(true)}
+        className="absolute top-8 right-8 z-30 p-3.5 bg-white/5 hover:bg-white/10 rounded-[1.2rem] backdrop-blur-xl border border-white/10 transition-all hover:rotate-90 group shadow-xl active:scale-95"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33-1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+      </button>
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-2xl animate-in fade-in">
+          <div className="relative w-full max-w-xl bg-[#05101c]/95 border-2 border-blue-500/30 rounded-[3rem] p-8 md:p-12 shadow-[0_0_150px_rgba(0,0,0,0.8)] animate-in zoom-in">
+            <button onClick={() => setShowSettings(false)} className="absolute top-8 right-8 p-3 text-blue-400 hover:bg-white/10 rounded-full transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+            <div className="flex flex-col items-center mb-8 text-center">
+              <h2 className="text-3xl font-bold text-white mb-2 tracking-wide">API 키 관리 센터</h2>
+              <p className="text-blue-400/60 text-lg">Gemini API 키를 설정하여 AI 정보를 활성화하세요.</p>
+            </div>
+            <div className="space-y-6">
+              <div className="bg-blue-900/10 rounded-[2.5rem] p-6 border border-white/5">
+                <div className="flex items-center justify-between mb-4">
+                  <span className="font-bold text-blue-200 text-lg uppercase tracking-widest">Gemini API Key</span>
+                  <div className={`w-3 h-3 rounded-full ${isApiReady ? 'bg-green-500' : 'bg-red-500'} animate-pulse`} />
+                </div>
+                <div className="relative mb-4">
+                  <input
+                    type={showKey ? "text" : "password"}
+                    value={tempKey}
+                    onChange={(e) => setTempKey(e.target.value)}
+                    placeholder="여기에 API 키를 입력하세요"
+                    className="w-full bg-black/60 border-2 border-blue-900/50 rounded-2xl py-4 px-6 text-white placeholder:text-white/10 focus:outline-none focus:border-blue-500 transition-all font-mono text-sm pr-12"
+                  />
+                  <button onClick={() => setShowKey(!showKey)} className="absolute right-4 top-1/2 -translate-y-1/2 text-blue-500/50 hover:text-blue-400">
+                    {showKey ? <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg> : <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>}
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <button onClick={handleSaveKey} className="py-3 bg-blue-700 hover:bg-blue-600 rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg text-lg">저장</button>
+                  <button onClick={handleDeleteKey} className="py-3 bg-red-900/30 hover:bg-red-900/50 text-red-400 border border-red-500/20 rounded-xl font-bold transition-all flex items-center justify-center gap-2 text-lg">삭제</button>
+                </div>
+              </div>
+              <div className="bg-blue-900/5 rounded-[2.5rem] p-6 border border-white/5">
+                <button 
+                  onClick={runConnectionTest}
+                  disabled={testStatus === 'TESTING' || (!tempKey && !getActiveKey())}
+                  className="w-full py-4 bg-white/5 hover:bg-white/10 disabled:opacity-20 rounded-xl font-bold text-xl transition-all flex items-center justify-center gap-3 border border-white/5"
+                >
+                  {testStatus === 'TESTING' ? <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" /> : <span>연결 상태 테스트</span>}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main Game Stage */}
+      <div className="relative z-10 w-full max-w-6xl flex flex-col items-center">
+        <div className="w-full min-h-[620px] md:min-h-[740px] bg-blue-950/20 backdrop-blur-2xl border-2 border-white/5 rounded-[4rem] shadow-[0_0_120px_rgba(0,0,0,0.8)] flex items-center justify-center relative overflow-hidden mb-8 transition-all p-8">
+          
+          {status === 'IDLE' && (
+            <div className="text-center animate-in zoom-in p-12">
+              <div className="mb-14 flex justify-center gap-12">
+                <OceanCreatureIcon type="fish" color="#ef4444" size={100} className="animate-bounce opacity-80" />
+                <OceanCreatureIcon type="seahorse" color="#a855f7" size={100} className="animate-bounce opacity-80" style={{animationDelay:'0.2s'}} />
+                <OceanCreatureIcon type="starfish" color="#f97316" size={100} className="animate-bounce opacity-80" style={{animationDelay:'0.4s'}} />
+              </div>
+              <h2 className="text-5xl font-bold mb-14 drop-shadow-2xl tracking-widest">탐험 레벨 선택</h2>
+              <div className="flex flex-wrap justify-center gap-10">
+                {LEVELS.map((level) => (
+                  <button key={level.id} onClick={() => startGame(level)} className="group relative px-12 py-8 bg-blue-900/30 hover:bg-blue-800/50 border-2 border-blue-400/20 rounded-[3rem] font-bold transition-all transform hover:scale-110 active:scale-95 shadow-2xl overflow-hidden flex flex-col items-center justify-center">
+                    <span className="relative z-10 text-2xl md:text-2xl tracking-widest">{level.label}</span>
+                    <div className="relative z-10 text-base md:text-lg opacity-80 mt-2">
+                       {level.fishCount}개 기억
+                    </div>
+                    <div className="absolute inset-0 bg-gradient-to-r from-blue-400/0 via-white/5 to-blue-400/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {status === 'SHOWING' && (
+            <div className="flex flex-col items-center p-12">
+              <div className="text-4xl font-bold mb-24 animate-pulse text-blue-200 tracking-[0.5em] bg-blue-950/60 px-20 py-6 rounded-full border border-blue-400/10 shadow-inner uppercase">집중하세요!</div>
+              <div className={`transition-all duration-500 transform ${activeCreature ? 'scale-[4.5] opacity-100' : 'scale-0 opacity-0 rotate-180'}`}>
+                {activeCreature && <div className="drop-shadow-[0_0_80px_rgba(255,255,255,0.8)]"><OceanCreatureIcon type={activeCreature.type} color={activeCreature.hex} size={150} /></div>}
+              </div>
+            </div>
+          )}
+
+          {status === 'INPUTTING' && (
+            <div className="w-full h-full flex flex-col items-center justify-center p-6">
+              <div className="mb-8 flex flex-col items-center">
+                <h2 className="text-5xl font-bold mb-4 drop-shadow-2xl tracking-widest">나타난 순서대로 탭하세요!</h2>
+                <div className="flex items-center gap-3 bg-blue-950/40 px-6 py-2 rounded-full border border-white/10">
+                   <span className="text-xl opacity-60">진행도:</span>
+                   <span className="text-2xl font-black text-blue-300">{userSequence.length}</span>
+                   <span className="text-xl opacity-60">/</span>
+                   <span className="text-2xl font-black">{sequence.length}</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-4 md:grid-cols-4 gap-8 md:gap-12 mb-12">
+                {OCEAN_CREATURES.map((creature) => (
+                  <button 
+                    key={creature.id} 
+                    onClick={() => handleInput(creature)} 
+                    className="group relative transition-all transform hover:scale-125 active:scale-90 flex items-center justify-center"
+                    style={{ WebkitTapHighlightColor: 'transparent' }}
+                  >
+                    <div className="relative z-10 p-2">
+                       <OceanCreatureIcon type={creature.type} color={creature.hex} size={80} className="drop-shadow-[0_0_15px_rgba(255,255,255,0.2)] group-hover:drop-shadow-[0_0_25px_rgba(255,255,255,0.5)]" />
+                    </div>
+                    <div className="absolute inset-0 bg-white/5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity scale-150 blur-xl" />
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex gap-4 p-4 bg-white/5 rounded-3xl border border-white/10 min-h-[4rem] max-w-full overflow-x-auto scrollbar-hide">
+                {userSequence.map((creature, idx) => (
+                  <div key={idx} className="animate-in slide-in-from-right-2 flex-shrink-0 bg-white/5 p-1.5 rounded-xl border border-white/5">
+                    <OceanCreatureIcon type={creature.type} color={creature.hex} size={32} />
+                  </div>
+                ))}
+                {userSequence.length === 0 && (
+                  <div className="flex items-center px-4 text-white/20 italic text-xl">선택을 기다리고 있어요...</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {status === 'SUCCESS' && (
+            <div className="text-center animate-in zoom-in w-full max-w-4xl px-12 py-12 flex flex-col items-center justify-center">
+              <div className="text-[12rem] mb-10 animate-bounce drop-shadow-[0_20px_60px_rgba(0,0,0,0.8)]">🐬</div>
+              <h2 className="text-8xl font-bold text-yellow-300 mb-8 drop-shadow-[0_10px_40px_rgba(0,0,0,1)] tracking-widest">정답이에요!</h2>
+              {seaFact && (
+                <div className="mb-16 p-10 bg-blue-950/60 rounded-[4rem] border-2 border-blue-400/20 animate-in fade-in slide-in-from-bottom-4 w-full shadow-2xl relative">
+                   <p className="text-blue-50 text-4xl leading-relaxed italic font-bold">"{seaFact}"</p>
+                </div>
+              )}
+              <div className="flex flex-wrap gap-12 justify-center">
+                <button onClick={() => startGame(currentLevel)} className="min-w-[260px] px-12 py-6 bg-yellow-400 hover:bg-yellow-500 text-blue-950 text-3xl font-bold rounded-[3rem] transition-all shadow-2xl hover:-translate-y-2">다시 하기</button>
+                <button onClick={resetGame} className="min-w-[260px] px-12 py-6 bg-white/5 hover:bg-white/10 text-white text-3xl font-bold rounded-[3rem] transition-all border border-white/10">메뉴로</button>
+              </div>
+            </div>
+          )}
+
+          {status === 'FAIL' && (
+            <div className="text-center animate-in zoom-in p-16 flex flex-col items-center justify-center">
+              <div className="text-[12rem] mb-12 drop-shadow-[0_20px_60px_rgba(0,0,0,0.8)]">🐙</div>
+              <h2 className="text-8xl font-bold text-red-500 mb-12 drop-shadow-[0_10px_40px_rgba(0,0,0,1)] tracking-widest">아쉬워요!</h2>
+              <div className="flex flex-wrap gap-12 justify-center">
+                <button onClick={() => startGame(currentLevel)} className="min-w-[260px] px-12 py-6 bg-blue-700 hover:bg-blue-600 text-white text-3xl font-bold rounded-[3rem] transition-all shadow-2xl hover:-translate-y-2">재도전</button>
+                <button onClick={resetGame} className="min-w-[260px] px-12 py-6 bg-white/5 hover:bg-white/10 text-white text-3xl font-bold rounded-[3rem] transition-all border border-white/10">메뉴로</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      
       <style>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
-        @keyframes fade-in { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
-        .animate-fade-in { animation: fade-in 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-        @keyframes pulse-slow { 0%, 100% { transform: scale(1); opacity: 0.8; } 50% { transform: scale(1.1); opacity: 1; } }
-        .animate-pulse-slow { animation: pulse-slow 3s ease-in-out infinite; }
-        @keyframes hint-pulse { 
-          0%, 100% { transform: scale(1); opacity: 0.5; } 
-          50% { transform: scale(1.4); opacity: 1; } 
-        }
-        .animate-hint-pulse { animation: hint-pulse 1.5s ease-in-out infinite; }
+        .animate-in { animation-duration: 0.6s; animation-fill-mode: both; }
+        .fade-in { animation-name: fadeIn; }
+        .zoom-in { animation-name: zoomIn; }
+        .slide-in-from-right-2 { animation-name: slideInRight; animation-duration: 0.3s; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes zoomIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
+        @keyframes slideInRight { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
       `}</style>
     </div>
   );

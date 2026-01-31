@@ -1,36 +1,25 @@
 
-export interface StarPoint {
-  id: number;
-  x: number; // 0-100 percentage
-  y: number; // 0-100 percentage
-  isDecoy?: boolean;
-}
+export type GameStatus = 'IDLE' | 'SHOWING' | 'INPUTTING' | 'SUCCESS' | 'FAIL';
 
-export interface Constellation {
+export type CreatureType = 'fish' | 'shell' | 'starfish' | 'seahorse';
+
+export interface OceanCreature {
   id: string;
   name: string;
-  koreanName: string;
-  description: string;
-  myth: string;
-  funFact: string;
-  stars: StarPoint[];
-  connections: [number, number][];
-  difficulty: 'Easy' | 'Medium' | 'Hard';
+  type: CreatureType;
+  colorClass: string;
+  hex: string;
 }
 
-export enum GameState {
-  LOBBY = 'LOBBY',
-  OBSERVE = 'OBSERVE',
-  DRAW = 'DRAW',
-  SUCCESS = 'SUCCESS',
-  FAILURE = 'FAILURE',
-  ENCYCLOPEDIA = 'ENCYCLOPEDIA',
-  RANKING = 'RANKING'
-}
-
-export interface RankEntry {
+export interface SpecialItem {
+  id: 'treasure' | 'slow';
   name: string;
-  score: number;
-  level: number;
-  date: string;
+  description: string;
+}
+
+export interface LevelConfig {
+  id: number;
+  label: string;
+  fishCount: number;
+  displayDuration: number;
 }
